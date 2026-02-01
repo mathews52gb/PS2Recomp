@@ -2,7 +2,7 @@
 #define PS2_RUNTIME_MACROS_H
 #include <cstdint>
 #include <immintrin.h> // For SSE/AVX intrinsics
-#include <intrin.h>
+
 inline uint32_t ps2_clz32(uint32_t val) {
 #if defined(_MSC_VER)
     unsigned long idx;
@@ -207,45 +207,73 @@ inline __m128i _mm_custom_srav_epi32(__m128i a, __m128i count) {
 #define PS2_VCALLMS(addr) // VU0 microprogram calls not supported directly
 #define PS2_VCALLMSR(reg) // VU0 microprogram calls not supported directly
 
-#define GPR_U32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0U : ctx_ptr->r[reg_idx].m128i_u32[0])
-#define GPR_S32(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0 : ctx_ptr->r[reg_idx].m128i_i32[0])
-#define GPR_U64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0ULL : ctx_ptr->r[reg_idx].m128i_u64[0])
-#define GPR_S64(ctx_ptr, reg_idx) ((reg_idx == 0) ? 0LL : ctx_ptr->r[reg_idx].m128i_i64[0])
-#define GPR_VEC(ctx_ptr, reg_idx) ((reg_idx == 0) ? _mm_setzero_si128() : ctx_ptr->r[reg_idx])
+inline uint32_t getGPR_U32(const void* ctx_ptr, int reg_idx) {
+    if (reg_idx == 0) return 0;
+    uint32_t val[4];
+    _mm_storeu_si128((__m128i*)val, ((__m128i*)ctx_ptr)[reg_idx]);
+    return val[0];
+}
+
+inline int32_t getGPR_S32(const void* ctx_ptr, int reg_idx) {
+    if (reg_idx == 0) return 0;
+    int32_t val[4];
+    _mm_storeu_si128((__m128i*)val, ((__m128i*)ctx_ptr)[reg_idx]);
+    return val[0];
+}
+
+inline uint64_t getGPR_U64(const void* ctx_ptr, int reg_idx) {
+    if (reg_idx == 0) return 0;
+    uint64_t val[2];
+    _mm_storeu_si128((__m128i*)val, ((__m128i*)ctx_ptr)[reg_idx]);
+    return val[0];
+}
+
+inline int64_t getGPR_S64(const void* ctx_ptr, int reg_idx) {
+    if (reg_idx == 0) return 0;
+    int64_t val[2];
+    _mm_storeu_si128((__m128i*)val, ((__m128i*)ctx_ptr)[reg_idx]);
+    return val[0];
+}
+
+#define GPR_U32(ctx_ptr, reg_idx) getGPR_U32(ctx_ptr, reg_idx)
+#define GPR_S32(ctx_ptr, reg_idx) getGPR_S32(ctx_ptr, reg_idx)
+#define GPR_U64(ctx_ptr, reg_idx) getGPR_U64(ctx_ptr, reg_idx)
+#define GPR_S64(ctx_ptr, reg_idx) getGPR_S64(ctx_ptr, reg_idx)
+#define GPR_VEC(ctx_ptr, reg_idx) ((reg_idx == 0) ? _mm_setzero_si128() : ((__m128i*)ctx_ptr)[reg_idx])
 
 #define SET_GPR_U32(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \
         if (reg_idx != 0)                  \
-            ctx_ptr->r[reg_idx] = _mm_set_epi32(0, 0, 0, (val)); \
+            ((__m128i*)ctx_ptr)[reg_idx] = _mm_set_epi32(0, 0, 0, (val)); \
     } while (0)
 
 #define SET_GPR_S32(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \
         if (reg_idx != 0)                  \
-            ctx_ptr->r[reg_idx] = _mm_set_epi32(0, 0, 0, (val)); \
+            ((__m128i*)ctx_ptr)[reg_idx] = _mm_set_epi32(0, 0, 0, (val)); \
     } while (0)
 
 #define SET_GPR_U64(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \
         if (reg_idx != 0)                  \
-            ctx_ptr->r[reg_idx] = _mm_set_epi64x(0, (val)); \
+            ((__m128i*)ctx_ptr)[reg_idx] = _mm_set_epi64x(0, (val)); \
     } while (0)
 
 #define SET_GPR_S64(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \
         if (reg_idx != 0)                  \
-            ctx_ptr->r[reg_idx] = _mm_set_epi64x(0, (val)); \
+            ((__m128i*)ctx_ptr)[reg_idx] = _mm_set_epi64x(0, (val)); \
     } while (0)
 
 #define SET_GPR_VEC(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \
         if (reg_idx != 0)                  \
-            ctx_ptr->r[reg_idx] = (val); \
+            ((__m128i*)ctx_ptr)[reg_idx] = (val); \
     } while (0)
 
 #endif // PS2_RUNTIME_MACROS_H

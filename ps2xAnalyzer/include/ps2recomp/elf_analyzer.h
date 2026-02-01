@@ -8,6 +8,7 @@
 #include <memory>
 #include <map>
 #include <set>
+#include "ps2recomp/types.h"
 
 namespace ps2recomp
 {

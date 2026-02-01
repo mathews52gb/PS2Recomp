@@ -78,6 +78,26 @@ namespace ps2recomp
 
             if (m_functions.empty())
             {
+                std::cout << "No symbols found. Attempting to use entry point as function." << std::endl;
+                uint32_t entry = m_elfParser->getEntryPoint();
+                if (entry != 0) {
+                    Function f;
+                    f.name = "entry_point";
+                    f.start = entry;
+                    // Find section containing entry point to estimate size
+                    f.end = entry + 0x1000; // Default size if unknown
+                    for (const auto& sec : m_sections) {
+                        if (entry >= sec.address && entry < sec.address + sec.size) {
+                            f.end = sec.address + sec.size;
+                            break;
+                        }
+                    }
+                    m_functions.push_back(f);
+                }
+            }
+
+            if (m_functions.empty())
+            {
                 std::cerr << "No functions found in ELF file." << std::endl;
                 return false;
             }

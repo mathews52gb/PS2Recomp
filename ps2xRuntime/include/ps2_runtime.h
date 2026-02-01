@@ -10,6 +10,8 @@
 #include <atomic>
 #include <filesystem>
 #include <iostream>
+#include <iomanip>
+#include <cstring>
 
 constexpr uint32_t PS2_RAM_SIZE = 32 * 1024 * 1024; // 32MB
 constexpr uint32_t PS2_RAM_MASK = 0x1FFFFFF;        // Mask for 32MB alignment
@@ -224,9 +226,11 @@ struct alignas(16) R5900Context
         std::cout << "SA: 0x" << std::setw(8) << sa << "\n";
         for (int i = 0; i < 32; ++i)
         {
+            uint32_t val[4];
+            _mm_storeu_si128((__m128i*)val, r[i]);
             std::cout << "R" << std::setw(2) << std::dec << i << ": 0x" << std::hex
-                      << std::setw(8) << r[i].m128i_u32[3] << std::setw(8) << r[i].m128i_u32[2] << "_"
-                      << std::setw(8) << r[i].m128i_u32[1] << std::setw(8) << r[i].m128i_u32[0] << "\n";
+                      << std::setw(8) << val[3] << std::setw(8) << val[2] << "_"
+                      << std::setw(8) << val[1] << std::setw(8) << val[0] << "\n";
         }
         std::cout << "Status: 0x" << std::setw(8) << cop0_status
                   << " Cause: 0x" << std::setw(8) << cop0_cause
@@ -243,7 +247,9 @@ inline uint32_t getRegU32(const R5900Context *ctx, int reg)
     // Check if reg is valid (0-31)
     if (reg < 0 || reg > 31)
         return 0;
-    return ctx->r[reg].m128i_u32[0];
+    uint32_t val[4];
+    _mm_storeu_si128((__m128i*)val, ctx->r[reg]);
+    return val[0];
 }
 
 inline void setReturnU32(R5900Context *ctx, uint32_t value)
@@ -304,198 +310,148 @@ struct VIFRegisters
 {
     uint32_t stat;   // Status
     uint32_t fbrst;  // VIF Force Break
-    uint32_t err;    // Error status
-    uint32_t mark;   // Interrupt control
-    uint32_t cycle;  // Transfer mode
-    uint32_t mode;   // Mode control
-    uint32_t num;    // Data amount counter
-    uint32_t mask;   // Data mask
-    uint32_t code;   // VIFcode
-    uint32_t itops;  // ITOP save
-    uint32_t base;   // Base address
-    uint32_t ofst;   // Offset
-    uint32_t tops;   // TOPS
+    uint32_t err;    // Error
+    uint32_t mark;   // Mark
+    uint32_t cycle;  // Cycle
+    uint32_t mode;   // Mode
+    uint32_t num;    // Number of data
+    uint32_t mask;   // Mask
+    uint32_t code;   // Code
+    uint32_t itops;  // ITOPs
     uint32_t itop;   // ITOP
-    uint32_t top;    // TOP
-    uint32_t row[4]; // Transfer row data
-    uint32_t col[4]; // Transfer column data
 };
 
-// PS2 DMA registers
-struct DMARegisters
-{
-    uint32_t chcr; // Channel control
-    uint32_t madr; // Memory address
-    uint32_t qwc;  // Quadword count
-    uint32_t tadr; // Tag address
-    uint32_t asr0; // Address stack 0
-    uint32_t asr1; // Address stack 1
-    uint32_t sadr; // Source address
-};
-
-struct JumpTable
-{
-    uint32_t address;              // Base address of the jump table
-    uint32_t baseRegister;         // Register used for index
-    std::vector<uint32_t> targets; // Jump targets
-};
-
+// PS2 Memory management
 class PS2Memory
 {
 public:
+    struct CodeRegion
+    {
+        uint32_t start;
+        uint32_t end;
+        std::vector<bool> modified;
+    };
+
+    struct TLBEntry
+    {
+        bool valid;
+        uint32_t vpn;
+        uint32_t pfn;
+        uint32_t mask;
+    };
+
     PS2Memory();
     ~PS2Memory();
 
-    // Initialize memory
-    bool initialize(size_t ramSize = PS2_RAM_SIZE);
-
-    // Memory access methods
+    bool initialize();
+    bool initialize(size_t ramSize);
     uint8_t *getRDRAM() { return m_rdram; }
     uint8_t *getScratchpad() { return m_scratchpad; }
-    uint8_t *getIOPRAM() { return iop_ram; }
+    uint8_t *getGSVRAM() { return m_gsvram; }
+    GSRegisters &gs() { return m_gs; }
+
+    uint32_t translateAddress(uint32_t addr) const;
+    void registerCodeRegion(uint32_t start, uint32_t end);
+    
+    // Hardware counters
     uint64_t dmaStartCount() const { return m_dmaStartCount.load(std::memory_order_relaxed); }
     uint64_t gifCopyCount() const { return m_gifCopyCount.load(std::memory_order_relaxed); }
     uint64_t gsWriteCount() const { return m_gsWriteCount.load(std::memory_order_relaxed); }
     uint64_t vifWriteCount() const { return m_vifWriteCount.load(std::memory_order_relaxed); }
-
-    // Read/write memory
+    
+    // Modification tracking
+    void markModified(uint32_t address, uint32_t size);
+    bool isCodeModified(uint32_t address, uint32_t size);
+    void clearModifiedFlag(uint32_t address, uint32_t size);
+    bool isAddressInRegion(uint32_t address, const CodeRegion &region);
+    
+    // IO Registers
+    uint32_t readIORegister(uint32_t address);
+    bool writeIORegister(uint32_t address, uint32_t value);
+    
+    // Memory access methods
     uint8_t read8(uint32_t address);
     uint16_t read16(uint32_t address);
     uint32_t read32(uint32_t address);
     uint64_t read64(uint32_t address);
     __m128i read128(uint32_t address);
-
+    
     void write8(uint32_t address, uint8_t value);
     void write16(uint32_t address, uint16_t value);
     void write32(uint32_t address, uint32_t value);
     void write64(uint32_t address, uint64_t value);
     void write128(uint32_t address, __m128i value);
+    
+    // Utility methods
+    bool isScratchpad(uint32_t address) const;
+    uint64_t* gsRegPtr(GSRegisters& regs, uint32_t address);
 
-    // TLB handling
-    uint32_t translateAddress(uint32_t virtualAddress);
-
-    // Hardware register interface
-    bool writeIORegister(uint32_t address, uint32_t value);
-    uint32_t readIORegister(uint32_t address);
-
-    // Track code modifications for self-modifying code
-    void registerCodeRegion(uint32_t start, uint32_t end);
-    bool isCodeModified(uint32_t address, uint32_t size);
-    void clearModifiedFlag(uint32_t address, uint32_t size);
-
-    // GS register accessors
-    GSRegisters &gs() { return gs_regs; }
-    const GSRegisters &gs() const { return gs_regs; }
-    uint8_t *getGSVRAM() { return m_gsVRAM; }
-    const uint8_t *getGSVRAM() const { return m_gsVRAM; }
-    bool hasSeenGifCopy() const { return m_seenGifCopy; }
-    // Main RAM (32MB)
+private:
     uint8_t *m_rdram;
-
-    // Scratchpad memory (16KB)
     uint8_t *m_scratchpad;
-
-    // IOP RAM (2MB)
-    uint8_t *iop_ram;
-
-    bool m_seenGifCopy;
+    uint8_t *m_gsvram;
+    uint8_t *iop_ram = nullptr;
+    GSRegisters m_gs;
+    std::vector<CodeRegion> m_codeRegions;
+    std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
+    std::vector<TLBEntry> m_tlbEntries;
+    
+    uint32_t vif0_regs[32];
+    uint32_t vif1_regs[32];
+    uint32_t dma_regs[128];
+    
     std::atomic<uint64_t> m_dmaStartCount{0};
     std::atomic<uint64_t> m_gifCopyCount{0};
     std::atomic<uint64_t> m_gsWriteCount{0};
     std::atomic<uint64_t> m_vifWriteCount{0};
-    // I/O registers
-    std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
-
-    // Registers
-    GSRegisters gs_regs;
-    uint8_t *m_gsVRAM;
-    VIFRegisters vif0_regs;
-    VIFRegisters vif1_regs;
-    DMARegisters dma_regs[10]; // 10 DMA channels
-
-    // TLB entries
-    struct TLBEntry
-    {
-        uint32_t vpn;
-        uint32_t pfn;
-        uint32_t mask;
-        bool valid;
-    };
-
-    std::vector<TLBEntry> m_tlbEntries;
-
-    struct CodeRegion
-    {
-        uint32_t start;
-        uint32_t end;
-        std::vector<bool> modified; // Bitmap of modified 4-byte blocks
-    };
-    std::vector<CodeRegion> m_codeRegions;
-
-    bool isAddressInRegion(uint32_t address, const CodeRegion &region);
-    void markModified(uint32_t address, uint32_t size);
-    bool isScratchpad(uint32_t address) const;
+    bool m_seenGifCopy = false;
 };
 
+// PS2 Runtime
 class PS2Runtime
 {
 public:
+    typedef void (*RecompiledFunction)(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+
     PS2Runtime();
     ~PS2Runtime();
 
-    bool initialize(const char *title = "PS2 Game");
+    bool initialize(const char *title);
     bool loadELF(const std::string &elfPath);
-    void run();
-
-    using RecompiledFunction = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
-
     void registerFunction(uint32_t address, RecompiledFunction func);
-    RecompiledFunction lookupFunction(uint32_t address);
     bool hasFunction(uint32_t address) const;
+    RecompiledFunction lookupFunction(uint32_t address);
 
-    void SignalException(R5900Context *ctx, PS2Exception exception);
+    PS2Memory &memory() { return m_memory; }
+    R5900Context &cpu() { return m_cpuContext; }
 
     void executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address);
+    void SignalException(R5900Context *ctx, PS2Exception exception);
+    void HandleIntegerOverflow(R5900Context *ctx);
+    
     void vu0StartMicroProgram(uint8_t *rdram, R5900Context *ctx, uint32_t address);
-
-public:
     void handleSyscall(uint8_t *rdram, R5900Context *ctx);
     void handleBreak(uint8_t *rdram, R5900Context *ctx);
-
     void handleTrap(uint8_t *rdram, R5900Context *ctx);
     void handleTLBR(uint8_t *rdram, R5900Context *ctx);
     void handleTLBWI(uint8_t *rdram, R5900Context *ctx);
     void handleTLBWR(uint8_t *rdram, R5900Context *ctx);
     void handleTLBP(uint8_t *rdram, R5900Context *ctx);
     void clearLLBit(R5900Context *ctx);
-
-public:
-    inline R5900Context &cpu() { return m_cpuContext; }
-    inline const R5900Context &cpu() const { return m_cpuContext; }
-
-    inline PS2Memory &memory() { return m_memory; }
-    inline const PS2Memory &memory() const { return m_memory; }
-
-public:
-    bool check_overflow = false;
-
-private:
-    void HandleIntegerOverflow(R5900Context *ctx);
+    void run();
 
 private:
     PS2Memory m_memory;
     R5900Context m_cpuContext;
-
     std::unordered_map<uint32_t, RecompiledFunction> m_functionTable;
 
     struct LoadedModule
     {
         std::string name;
         uint32_t baseAddress;
-        size_t size;
+        uint32_t size;
         bool active;
     };
-
     std::vector<LoadedModule> m_loadedModules;
 };
 

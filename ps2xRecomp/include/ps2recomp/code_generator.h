@@ -6,6 +6,7 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include "ps2recomp/types.h"
 
 namespace ps2recomp
 {

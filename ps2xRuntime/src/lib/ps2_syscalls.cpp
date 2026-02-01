@@ -14,6 +14,8 @@
 #include <condition_variable>
 #include <atomic>
 #include <filesystem>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 std::unordered_map<int, FILE *> g_fileDescriptors;
 int g_nextFd = 3; // Start after stdin, stdout, stderr
