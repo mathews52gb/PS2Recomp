@@ -21,6 +21,7 @@ FetchContent_MakeAvailable(raylib)
 add_library(ps2_runtime STATIC
     src/lib/ps2_memory.cpp
     src/lib/ps2_runtime.cpp
+    src/lib/gs_renderer.cpp
     src/lib/ps2_stubs.cpp
     src/lib/ps2_syscalls.cpp
 )
@@ -31,6 +32,7 @@ file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
 
 add_executable(ps2EntryRunner
     ${RUNNER_SRC_FILES}
+    src/runner/ps2_recompiled_functions.cpp
 )
 
 if (MSVC)

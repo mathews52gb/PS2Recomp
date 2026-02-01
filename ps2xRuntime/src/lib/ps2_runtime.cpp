@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "gs_renderer.h"
 #include "ps2_syscalls.h"
 #include "ps2_runtime_macros.h"
 #include <iostream>
@@ -12,8 +13,7 @@
 
 #define ELF_MAGIC 0x464C457F // "\x7FELF" in little endian
 #define ET_EXEC 2            // Executable file
-
-#define EM_MIPS 8 // MIPS architecture
+#define EM_MIPS 8            // MIPS architecture
 
 struct ElfHeader
 {
@@ -55,13 +55,13 @@ struct ProgramHeader
 
 static constexpr int FB_WIDTH = 640;
 static constexpr int FB_HEIGHT = 448;
-static constexpr uint32_t DEFAULT_FB_ADDR = 0x00100000; // location in RDRAM the guest will draw to
-static constexpr uint32_t DEFAULT_FB_SIZE = FB_WIDTH * FB_HEIGHT * 4;
+
+std::atomic<int> g_activeThreads{0};
 
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt)
 {
-    // Try to use GS dispfb/display registers to locate the visible buffer.
     const GSRegisters &gs = rt->memory().gs();
+    GSRenderer &renderer = rt->renderer();
 
     // DISPFBUF1 fields: FBP (bits 0-8) * 2048 bytes, FBW (bits 10-15) blocks of 64 pixels, PSM (bits 16-20)
     uint32_t dispfb = static_cast<uint32_t>(gs.dispfb1 & 0xFFFFFFFFULL);
@@ -74,116 +74,41 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt)
     uint32_t dw = static_cast<uint32_t>((display64 >> 23) & 0x7FF);
     uint32_t dh = static_cast<uint32_t>((display64 >> 34) & 0x7FF);
 
-    // Default to 640x448 if regs look strange.
-    uint32_t width = (dw + 1);
-    uint32_t height = (dh + 1);
-    if (dw == 0)
-        width = FB_WIDTH;
-    if (dh == 0)
-        height = FB_HEIGHT;
-    if (width > FB_WIDTH)
-        width = FB_WIDTH;
-    if (height > FB_HEIGHT)
-        height = FB_HEIGHT;
-
-    static uint64_t prev_dispfb = ~0ull;
-    static uint64_t prev_display = ~0ull;
-    static bool vramLogged = false;
-    if (gs.dispfb1 != prev_dispfb || gs.display1 != prev_display)
+    GSRenderer::FramebufferConfig config;
+    config.basePointer = fbp;
+    config.width = (fbw ? fbw : (FB_WIDTH / 64));
+    config.height = (dh ? (dh + 1) : FB_HEIGHT);
+    
+    // Map PS2 PSM to Renderer PixelFormat
+    switch (psm)
     {
-        std::cout << "[GS] dispfb1=0x" << std::hex << gs.dispfb1
-                  << " display1=0x" << gs.display1 << std::dec << std::endl;
-        prev_dispfb = gs.dispfb1;
-        prev_display = gs.display1;
-        // Allow VRAM peek to re-log when the buffer changes.
-        vramLogged = false;
+    case 0: config.format = GSRenderer::PixelFormat::PSMCT32; break;
+    case 2: config.format = GSRenderer::PixelFormat::PSMCT16; break;
+    default: config.format = GSRenderer::PixelFormat::PSMCT32; break;
     }
 
-    // Only handle PSMCT32 (0) in this minimal blitter.
-    if (psm != 0)
-    {
-        uint8_t *src = rt->memory().getRDRAM() + (DEFAULT_FB_ADDR & 0x1FFFFFFF);
-        UpdateTexture(tex, src);
-        return;
-    }
+    // Update renderer's internal buffer
+    renderer.updateFramebuffer(rt->memory(), config);
 
-    constexpr uint32_t DEFAULT_FB_ADDR = 0x00100000;
-    uint32_t baseBytes = fbp * 2048;
-    if (fbp == 0)
+    // If dirty, update the Raylib texture
+    if (renderer.isFramebufferDirty())
     {
-        baseBytes = DEFAULT_FB_ADDR;
+        UpdateTexture(tex, renderer.getFramebufferRGBA().data());
+        renderer.clearFramebufferDirty();
     }
-    uint32_t strideBytes = (fbw ? fbw : (FB_WIDTH / 64)) * 64 * 4;
-    uint8_t *rdram = rt->memory().getRDRAM();
-    uint8_t *gsvram = rt->memory().getGSVRAM();
-    std::vector<uint8_t> scratch(FB_WIDTH * FB_HEIGHT * 4, 0);
-
-    for (uint32_t y = 0; y < height; ++y)
-    {
-        uint32_t srcOff = baseBytes + y * strideBytes;
-        uint32_t dstOff = y * FB_WIDTH * 4;
-        uint32_t copyW = width * 4;
-        uint32_t srcIdx = srcOff;
-        if (!vramLogged)
-        {
-            uint32_t sum = 0;
-            for (int i = 0; i < 32 && (srcIdx + i) < PS2_GS_VRAM_SIZE; ++i)
-            {
-                sum += gsvram[srcIdx + i];
-            }
-            std::cout << "[VRAM peek] sum first32=0x" << std::hex << sum << std::dec << std::endl;
-            vramLogged = true;
-        }
-        if (srcIdx + copyW <= PS2_GS_VRAM_SIZE && gsvram)
-        {
-            std::memcpy(&scratch[dstOff], gsvram + srcIdx, copyW);
-        }
-        else
-        {
-            uint32_t rdramIdx = srcOff & PS2_RAM_MASK;
-            if (rdramIdx + copyW > PS2_RAM_SIZE)
-                copyW = PS2_RAM_SIZE - rdramIdx;
-            std::memcpy(&scratch[dstOff], rdram + rdramIdx, copyW);
-        }
-    }
-
-    // Peek first few bytes to see if anything is drawn.
-    uint32_t peekOff = 0;
-    uint32_t sum = 0;
-    for (int i = 0; i < 32; ++i)
-    {
-        sum += scratch[peekOff + i];
-    }
-    static int peekCount = 0;
-    if (peekCount < 4)
-    {
-        std::cout << "[FB peek] sum first32=0x" << std::hex << sum << std::dec
-                  << " w=" << width << " h=" << height << std::endl;
-        ++peekCount;
-    }
-
-    UpdateTexture(tex, scratch.data());
 }
-
 
 PS2Runtime::PS2Runtime()
 {
     std::memset(&m_cpuContext, 0, sizeof(m_cpuContext));
-
-    // R0 is always zero in MIPS
     m_cpuContext.r[0] = _mm_set1_epi32(0);
-
-    // Stack pointer (SP) and global pointer (GP) will be set by the loaded ELF
-
     m_functionTable.clear();
-
     m_loadedModules.clear();
 }
 
 PS2Runtime::~PS2Runtime()
 {
     m_loadedModules.clear();
-
     m_functionTable.clear();
 }
 
@@ -192,6 +117,12 @@ bool PS2Runtime::initialize(const char *title)
     if (!m_memory.initialize())
     {
         std::cerr << "Failed to initialize PS2 memory" << std::endl;
+        return false;
+    }
+
+    if (!m_renderer.initialize(FB_WIDTH, FB_HEIGHT))
+    {
+        std::cerr << "Failed to initialize GS Renderer" << std::endl;
         return false;
     }
 
@@ -240,14 +171,10 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
                       << " - 0x" << (ph.vaddr + ph.memsz)
                       << " (size: 0x" << ph.memsz << ")" << std::dec << std::endl;
 
-            // Allocate temporary buffer for the segment
             std::vector<uint8_t> buffer(ph.filesz);
-
-            // Read segment data
             file.seekg(ph.offset);
             file.read(reinterpret_cast<char *>(buffer.data()), ph.filesz);
 
-            // Copy to memory
             uint32_t physAddr = m_memory.translateAddress(ph.vaddr);
             uint8_t *dest = nullptr;
             if (ph.vaddr >= PS2_SCRATCHPAD_BASE && ph.vaddr < PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE)
@@ -265,7 +192,6 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
                 std::memset(dest + ph.filesz, 0, ph.memsz - ph.filesz);
             }
 
-            // Track executable regions for self-modifying code invalidation
             if (ph.flags & 0x1) // PF_X
             {
                 m_memory.registerCodeRegion(ph.vaddr, ph.vaddr + ph.memsz);
@@ -275,10 +201,9 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
 
     LoadedModule module;
     module.name = elfPath.substr(elfPath.find_last_of("/\\") + 1);
-    module.baseAddress = 0x00100000; // Typical base address for PS2 executables
-    module.size = 0;                 // Would need to calculate from segments
+    module.baseAddress = 0x00100000;
+    module.size = 0;
     module.active = true;
-
     m_loadedModules.push_back(module);
 
     std::cout << "ELF file loaded successfully. Entry point: 0x" << std::hex << m_cpuContext.pc << std::dec << std::endl;
@@ -317,11 +242,9 @@ void PS2Runtime::SignalException(R5900Context *ctx, PS2Exception exception)
 {
     if (exception == EXCEPTION_INTEGER_OVERFLOW)
     {
-        // PS2 behavior: jump to exception handler
         HandleIntegerOverflow(ctx);
     }
 }
-
 
 void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address)
 {
@@ -331,24 +254,16 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
     {
         std::cout << "[VU0] microprogram @0x" << std::hex << address
                   << " pc=0x" << ctx->pc
-                  << " ra=0x" << getRegU32(ctx, 31)
                   << std::dec << std::endl;
     }
     ++count;
-
-    // Clear/seed status so dependent code sees "success".
     ctx->vu0_clip_flags = 0;
-    ctx->vu0_clip_flags2 = 0;
-    ctx->vu0_mac_flags = 0;
     ctx->vu0_status = 0;
     ctx->vu0_q = 1.0f;
-
-    // TODO: Implement a real interpreter. For now, no register mutations beyond defaults.
 }
 
 void PS2Runtime::vu0StartMicroProgram(uint8_t *rdram, R5900Context *ctx, uint32_t address)
 {
-    // VCALLMS/VCALLMSR paths both end up here; reuse the same minimal stub.
     executeVU0Microprogram(rdram, ctx, address);
 }
 
@@ -389,22 +304,16 @@ void PS2Runtime::handleTLBP(uint8_t *rdram, R5900Context *ctx)
 
 void PS2Runtime::clearLLBit(R5900Context *ctx)
 {
-    ctx->cop0_status &= ~0x00000002; // LL bit is bit 1 in the status register
+    ctx->cop0_status &= ~0x00000002;
     std::cout << "LL bit cleared at PC: 0x" << std::hex << ctx->pc << std::dec << std::endl;
 }
 
 void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 {
     std::cerr << "Integer overflow exception at PC: 0x" << std::hex << ctx->pc << std::dec << std::endl;
-
-    // Set the EPC (Exception Program Counter) to the current PC
     m_cpuContext.cop0_epc = ctx->pc;
-
-    // Set the cause register to indicate an integer overflow
     m_cpuContext.cop0_cause |= (EXCEPTION_INTEGER_OVERFLOW << 2);
-
-    // Jump to the exception handler (usually at 0x80000000)
-    m_cpuContext.pc = 0x80000000; // Default PS2 exception handler address
+    m_cpuContext.pc = 0x80000000;
 }
 
 void PS2Runtime::run()
@@ -417,57 +326,27 @@ void PS2Runtime::run()
 
     std::cout << "Starting execution at address 0x" << std::hex << m_cpuContext.pc << std::dec << std::endl;
 
-    // A blank image to use as a framebuffer
-    Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
+    Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLACK);
     Texture2D frameTex = LoadTextureFromImage(blank);
     UnloadImage(blank);
 
     g_activeThreads.store(1, std::memory_order_relaxed);
 
     std::thread gameThread([&, entryPoint]()
-                           {
+    {
         try
         {
             entryPoint(m_memory.getRDRAM(), &m_cpuContext, this);
-            std::cout << "Game thread returned. PC=0x" << std::hex << m_cpuContext.pc
-                      << " RA=0x" << getRegU32(&m_cpuContext, 31) << std::dec << std::endl;
         }
         catch (const std::exception &e)
         {
             std::cerr << "Error during program execution: " << e.what() << std::endl;
         }
-        g_activeThreads.fetch_sub(1, std::memory_order_relaxed); });
+        g_activeThreads.fetch_sub(1, std::memory_order_relaxed);
+    });
 
-    uint64_t tick = 0;
     while (g_activeThreads.load(std::memory_order_relaxed) > 0)
     {
-        if ((tick++ % 120) == 0)
-        {
-            std::cout << "[run] activeThreads=" << g_activeThreads.load(std::memory_order_relaxed);
-            std::cout << " pc=0x" << std::hex << m_cpuContext.pc
-                      << " ra=0x" << getRegU32(&m_cpuContext, 31)
-                      << " sp=0x" << getRegU32(&m_cpuContext, 29)
-                      << " gp=0x" << getRegU32(&m_cpuContext, 28) << std::dec << std::endl;
-        }
-        if ((tick % 600) == 0)
-        {
-            static uint64_t lastDma = 0, lastGif = 0, lastGs = 0, lastVif = 0;
-            uint64_t curDma = m_memory.dmaStartCount();
-            uint64_t curGif = m_memory.gifCopyCount();
-            uint64_t curGs = m_memory.gsWriteCount();
-            uint64_t curVif = m_memory.vifWriteCount();
-            if (curDma != lastDma || curGif != lastGif || curGs != lastGs || curVif != lastVif)
-            {
-                std::cout << "[hw] dma_starts=" << curDma
-                          << " gif_copies=" << curGif
-                          << " gs_writes=" << curGs
-                          << " vif_writes=" << curVif << std::endl;
-                lastDma = curDma;
-                lastGif = curGif;
-                lastGs = curGs;
-                lastVif = curVif;
-            }
-        }
         UploadFrame(frameTex, this);
 
         BeginDrawing();
@@ -477,29 +356,15 @@ void PS2Runtime::run()
 
         if (WindowShouldClose())
         {
-            std::cout << "[run] window close requested, breaking out of loop" << std::endl;
             break;
         }
     }
 
-    if (g_activeThreads.load(std::memory_order_relaxed) == 0)
+    if (gameThread.joinable())
     {
-        if (gameThread.joinable())
-        {
-            gameThread.join();
-        }
+        gameThread.join();
     }
-    else
-    {
-
-        if (gameThread.joinable())
-        {
-            gameThread.detach();
-        }
-    }
-
+    
     UnloadTexture(frameTex);
     CloseWindow();
-
-    std::cout << "[run] exiting loop, activeThreads=" << g_activeThreads.load(std::memory_order_relaxed) << std::endl;
 }

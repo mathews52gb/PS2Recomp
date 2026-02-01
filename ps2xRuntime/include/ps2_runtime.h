@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <cstring>
 
+#include "gs_renderer.h"
+
 constexpr uint32_t PS2_RAM_SIZE = 32 * 1024 * 1024; // 32MB
 constexpr uint32_t PS2_RAM_MASK = 0x1FFFFFF;        // Mask for 32MB alignment
 constexpr uint32_t PS2_RAM_BASE = 0x00000000;       // Physical base of RDRAM
@@ -347,7 +349,7 @@ public:
     bool initialize(size_t ramSize);
     uint8_t *getRDRAM() { return m_rdram; }
     uint8_t *getScratchpad() { return m_scratchpad; }
-    uint8_t *getGSVRAM() { return m_gsvram; }
+    uint8_t *getGSVRAM() const { return m_gsvram; }
     GSRegisters &gs() { return m_gs; }
 
     uint32_t translateAddress(uint32_t addr) const;
@@ -424,6 +426,7 @@ public:
 
     PS2Memory &memory() { return m_memory; }
     R5900Context &cpu() { return m_cpuContext; }
+    GSRenderer &renderer() { return m_renderer; }
 
     void executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address);
     void SignalException(R5900Context *ctx, PS2Exception exception);
@@ -443,6 +446,7 @@ public:
 private:
     PS2Memory m_memory;
     R5900Context m_cpuContext;
+    GSRenderer m_renderer;
     std::unordered_map<uint32_t, RecompiledFunction> m_functionTable;
 
     struct LoadedModule
