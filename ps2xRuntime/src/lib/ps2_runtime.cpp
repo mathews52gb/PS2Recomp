@@ -269,7 +269,155 @@ void PS2Runtime::vu0StartMicroProgram(uint8_t *rdram, R5900Context *ctx, uint32_
 
 void PS2Runtime::handleSyscall(uint8_t *rdram, R5900Context *ctx)
 {
-    std::cout << "Syscall encountered at PC: 0x" << std::hex << ctx->pc << std::dec << std::endl;
+    // PS2 syscall number is in $v1 (register 3)
+    uint32_t syscallNum = GPR_U32(ctx, 3);
+    
+    static int logCount = 0;
+    if (logCount < 20)
+    {
+        std::cout << "[Syscall] #" << std::dec << syscallNum 
+                  << " (0x" << std::hex << syscallNum << std::dec << ")"
+                  << " at PC: 0x" << std::hex << ctx->pc << std::dec << std::endl;
+        ++logCount;
+    }
+
+    switch (syscallNum)
+    {
+    case 2:  // SetGsCrt
+        ps2_syscalls::GsSetCrt(rdram, ctx, this);
+        break;
+    case 4:  // Exit
+        std::cout << "[Syscall] Exit called" << std::endl;
+        setReturnS32(ctx, 0);
+        break;
+    case 7:  // ExecPS2 / SleepThread
+        ps2_syscalls::SleepThread(rdram, ctx, this);
+        break;
+    case 20: // _EnableIntc
+        ps2_syscalls::EnableIntc(rdram, ctx, this);
+        break;
+    case 21: // _DisableIntc
+        ps2_syscalls::DisableIntc(rdram, ctx, this);
+        break;
+    case 22: // _EnableDmac
+        ps2_syscalls::EnableDmac(rdram, ctx, this);
+        break;
+    case 23: // _DisableDmac
+        ps2_syscalls::DisableDmac(rdram, ctx, this);
+        break;
+    case 24: // _SetAlarm
+        ps2_syscalls::SetAlarm(rdram, ctx, this);
+        break;
+    case 32: // CreateThread
+        ps2_syscalls::CreateThread(rdram, ctx, this);
+        break;
+    case 33: // DeleteThread
+        ps2_syscalls::DeleteThread(rdram, ctx, this);
+        break;
+    case 34: // StartThread
+        ps2_syscalls::StartThread(rdram, ctx, this);
+        break;
+    case 35: // ExitThread
+        ps2_syscalls::ExitThread(rdram, ctx, this);
+        break;
+    case 36: // ExitDeleteThread
+        ps2_syscalls::ExitDeleteThread(rdram, ctx, this);
+        break;
+    case 37: // TerminateThread
+        ps2_syscalls::TerminateThread(rdram, ctx, this);
+        break;
+    case 41: // ChangeThreadPriority
+        ps2_syscalls::ChangeThreadPriority(rdram, ctx, this);
+        break;
+    case 43: // RotateThreadReadyQueue
+        ps2_syscalls::RotateThreadReadyQueue(rdram, ctx, this);
+        break;
+    case 45: // ReleaseWaitThread
+        ps2_syscalls::ReleaseWaitThread(rdram, ctx, this);
+        break;
+    case 47: // GetThreadId
+        ps2_syscalls::GetThreadId(rdram, ctx, this);
+        break;
+    case 48: // ReferThreadStatus
+        ps2_syscalls::ReferThreadStatus(rdram, ctx, this);
+        break;
+    case 50: // SleepThread
+        ps2_syscalls::SleepThread(rdram, ctx, this);
+        break;
+    case 51: // WakeupThread
+        ps2_syscalls::WakeupThread(rdram, ctx, this);
+        break;
+    case 52: // iWakeupThread
+        ps2_syscalls::iWakeupThread(rdram, ctx, this);
+        break;
+    case 55: // SuspendThread
+        ps2_syscalls::SuspendThread(rdram, ctx, this);
+        break;
+    case 57: // ResumeThread
+        ps2_syscalls::ResumeThread(rdram, ctx, this);
+        break;
+    case 60: // SetupThread
+        ps2_syscalls::SetupThread(rdram, ctx, this);
+        break;
+    case 61: // SetupHeap / EndOfHeap
+        {
+            // SetupHeap: $a0 = heap_start, $a1 = heap_size
+            // Returns: heap end address in $v0
+            uint32_t heapStart = GPR_U32(ctx, 4);
+            uint32_t heapSize = GPR_U32(ctx, 5);
+            uint32_t heapEnd = heapStart + heapSize;
+            std::cout << "[Syscall] SetupHeap: start=0x" << std::hex << heapStart 
+                      << " size=0x" << heapSize 
+                      << " end=0x" << heapEnd << std::dec << std::endl;
+            setReturnS32(ctx, static_cast<int32_t>(heapEnd));
+        }
+        break;
+    case 62: // EndOfHeap
+        {
+            uint32_t heapEnd = GPR_U32(ctx, 4);
+            std::cout << "[Syscall] EndOfHeap: 0x" << std::hex << heapEnd << std::dec << std::endl;
+            setReturnS32(ctx, static_cast<int32_t>(heapEnd));
+        }
+        break;
+    case 64: // CreateSema
+        ps2_syscalls::CreateSema(rdram, ctx, this);
+        break;
+    case 65: // DeleteSema
+        ps2_syscalls::DeleteSema(rdram, ctx, this);
+        break;
+    case 66: // SignalSema
+        ps2_syscalls::SignalSema(rdram, ctx, this);
+        break;
+    case 67: // iSignalSema
+        ps2_syscalls::iSignalSema(rdram, ctx, this);
+        break;
+    case 68: // WaitSema
+        ps2_syscalls::WaitSema(rdram, ctx, this);
+        break;
+    case 69: // PollSema
+        ps2_syscalls::PollSema(rdram, ctx, this);
+        break;
+    case 70: // iPollSema
+        ps2_syscalls::iPollSema(rdram, ctx, this);
+        break;
+    case 71: // ReferSemaStatus
+        ps2_syscalls::ReferSemaStatus(rdram, ctx, this);
+        break;
+    case 100: // FlushCache
+        ps2_syscalls::FlushCache(rdram, ctx, this);
+        break;
+    case 112: // GsGetIMR
+        ps2_syscalls::GsGetIMR(rdram, ctx, this);
+        break;
+    case 113: // GsPutIMR
+        ps2_syscalls::GsPutIMR(rdram, ctx, this);
+        break;
+    default:
+        std::cerr << "[Syscall] Unhandled syscall #" << syscallNum 
+                  << " at PC: 0x" << std::hex << ctx->pc << std::dec << std::endl;
+        setReturnS32(ctx, 0);
+        break;
+    }
 }
 
 void PS2Runtime::handleBreak(uint8_t *rdram, R5900Context *ctx)

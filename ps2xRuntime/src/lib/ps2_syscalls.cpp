@@ -47,7 +47,7 @@ static thread_local int g_currentThreadId = 1;
 
 static std::unordered_map<int, std::shared_ptr<SemaInfo>> g_semas;
 static int g_nextSemaId = 1;
-std::atomic<int> g_activeThreads{0};
+extern std::atomic<int> g_activeThreads;
 
 int allocatePs2Fd(FILE *file)
 {
